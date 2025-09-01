@@ -1,4 +1,4 @@
-# Cashcode VM MVP
+# Cashcode
 
 - Spec: `docs/CCBC_SPEC.md`
 - VM sources: `cvm/` (builds single binary `cash`)

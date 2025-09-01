@@ -165,7 +165,32 @@ static void emit_text_line(const char* line, CConst** consts, size_t* csz, size_
     bc_code_emit(code,codelen,codecap,0x03); // PRINT_RAW
 }
 
-static const char* process_block(const char* cur, CConst** consts, size_t* csz, size_t* ccap,
+static char* read_joined_file(const char* base_dir, const char* rel){
+    char path[1024];
+    if(rel[0]=='/') snprintf(path, sizeof(path), "%s%s", base_dir, rel);
+    else snprintf(path, sizeof(path), "%s/%s", base_dir, rel);
+    FILE* f = fopen(path, "rb"); if(!f) return NULL;
+    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+    char* buf=(char*)malloc(sz+1); if(!buf){ fclose(f); return NULL; }
+    if(fread(buf,1,sz,f)!=(size_t)sz){ fclose(f); free(buf); return NULL; }
+    fclose(f); buf[sz]=0; return buf;
+}
+
+static char* replace_slot(const char* layout, const char* body){
+    const char* slot = strstr(layout, "<slot/>");
+    if(!slot){ return str_dup(layout); }
+    size_t before = (size_t)(slot - layout);
+    size_t after_len = strlen(slot + 7);
+    size_t body_len = strlen(body);
+    char* out = (char*)malloc(before + body_len + after_len + 1);
+    memcpy(out, layout, before);
+    memcpy(out + before, body, body_len);
+    memcpy(out + before + body_len, slot + 7, after_len + 1);
+    return out;
+}
+
+static const char* process_block(const char* cur, const char* pages_dir,
+                                 CConst** consts, size_t* csz, size_t* ccap,
                                  uint8_t** code, size_t* codelen, size_t* codecap,
                                  Var* vars, size_t* vcount, size_t vcap){
     // Process lines until $end or end of string. Returns pointer to the position after ending line.
@@ -210,11 +235,11 @@ static const char* process_block(const char* cur, CConst** consts, size_t* csz, 
                 if(truthy){
                     const char* true_end = else_pos ? else_pos : end_pos;
                     const char* p = inner;
-                    while(p < true_end){ p = process_block(p, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p < true_end){ p = process_block(p, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
                 } else if(else_pos){
                     const char* false_start = strchr(else_pos,'\n'); false_start = false_start ? false_start+1 : end_pos;
                     const char* p = false_start;
-                    while(p < end_pos){ p = process_block(p, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p < end_pos){ p = process_block(p, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
                 }
                 // move cur to after $end line
                 const char* end_nl = strchr(end_pos,'\n'); cur = end_nl ? end_nl+1 : end_pos; free(raw); continue;
@@ -239,13 +264,44 @@ static const char* process_block(const char* cur, CConst** consts, size_t* csz, 
                     if(*vcount < vcap){ vars[*vcount].name = str_dup(vname); vars[*vcount].value = str_dup(tv); (*vcount)++; }
                     // process inner
                     const char* p2 = inner;
-                    while(p2 < end_pos){ p2 = process_block(p2, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p2 < end_pos){ p2 = process_block(p2, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
                     // pop var
                     if(*vcount>0){ free(vars[*vcount-1].name); free(vars[*vcount-1].value); (*vcount)--; }
                     tok = strtok_r(NULL, ",", &saveptr);
                 }
                 free(list);
                 const char* end_nl = strchr(end_pos,'\n'); cur = end_nl ? end_nl+1 : end_pos; free(raw); continue;
+            }
+            if(strncmp(line, "$include ", 9)==0){
+                char* p = line+9; while(*p==' '||*p=='\t') p++;
+                if(*p=='"' || *p=='\''){ char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* rel=start; char* inc = read_joined_file(pages_dir, rel); *p=tmp; if(inc){ Var vtmp[32]; size_t vcnt=*vcount; const char* pos = inc; while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, &vcnt, 32); if(!*pos) break; } free(inc);} }
+                free(raw); cur = nl? nl+1 : cur+linelen; continue;
+            }
+            if(strncmp(line, "$layout ", 8)==0){
+                char* p = line+8; while(*p==' '||*p=='\t') p++;
+                if(*p=='"' || *p=='\''){
+                    char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* rel=start;
+                    // read layout file
+                    char* lay = read_joined_file(pages_dir, rel);
+                    *p=tmp;
+                    // the body is the remainder after this line
+                    const char* body_start = nl? nl+1 : cur+linelen;
+                    char* body = str_dup(body_start);
+                    if(lay && body){
+                        char* combined = replace_slot(lay, body);
+                        if(combined){
+                            const char* pos = combined;
+                            while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); if(!*pos) break; }
+                            free(combined);
+                        }
+                    }
+                    if(lay) free(lay);
+                    if(body) free(body);
+                    free(raw);
+                    // consume rest of source; we're done at this level
+                    return body_start + strlen(body_start);
+                }
+                free(raw); cur = nl? nl+1 : cur+linelen; continue;
             }
             // unknown $ directive -> ignore line
             free(raw); cur = nl? nl+1 : cur+linelen; continue;
@@ -299,9 +355,9 @@ int cc_build_bundle_from_pages(const char* pages_dir, uint8_t** out_buf, size_t*
         if(rsz==rcap){ rcap=rcap?rcap*2:8; routes=(CRoute*)realloc(routes, rcap*sizeof(CRoute)); }
         routes[rsz].path_idx = path_idx; routes[rsz].func_index = func_index; rsz++;
 
-        // process body with $let/$if/$for and {$var} substitution
+        // process body with $let/$if/$for, $include, and {$var} substitution
         Var vars[32]; size_t vcount=0;
-        (void)process_block(rest, &consts, &csz, &ccap, &code, &codelen, &codecap, vars, &vcount, 32);
+        (void)process_block(rest, pages_dir, &consts, &csz, &ccap, &code, &codelen, &codecap, vars, &vcount, 32);
         bc_code_emit(&code, &codelen, &codecap, 0x00); // HALT
         free(buf);
     }

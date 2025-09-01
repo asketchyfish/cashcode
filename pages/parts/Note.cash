@@ -1,0 +1,2 @@
+$route "/_note"
+<p><em>{$text}</em></p>

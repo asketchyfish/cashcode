@@ -1,30 +1,12 @@
 $route "/"
+$let title = "Cash Layout Demo"
+$layout "layouts/Base.cash"
 
-$let title = "Cash VM Demo"
-$let lang = "Cash"
-
-<!doctype html>
-<html>
-<head>
-<title>{$title}</title>
-</head>
-<body>
-<h1>Hello {$lang}</h1>
-
-$if true
-<p>This line is visible because the condition is true.</p>
-$end
-
-$if $lang
-<p>Language variable is set to: {$lang}</p>
-$else
-<p>No language set.</p>
-$end
+<h1>Home</h1>
+$include "parts/Note.cash"
 
 <ul>
-$for $item in alpha,beta,gamma
-<li>Item: {$item}</li>
+$for $item in one,two,three
+<li>{$item}</li>
 $end
 </ul>
-</body>
-</html>

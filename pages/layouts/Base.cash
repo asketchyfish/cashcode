@@ -1,0 +1,10 @@
+$route "/_layout"
+<!doctype html>
+<html>
+<head><title>{$title}</title></head>
+<body>
+<header><strong>Header</strong></header>
+<slot/>
+<footer><small>Footer</small></footer>
+</body>
+</html>
