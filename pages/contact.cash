@@ -1,0 +1,15 @@
+$route "/contact"
+
+$head {
+	$title: "Contact"
+}
+
+<main>
+	<h1>Contact</h1>
+	<form $action="contact.submit">
+		<label>Name <input name="name" /></label>
+		<button>Send</button>
+	</form>
+</main>
+
+

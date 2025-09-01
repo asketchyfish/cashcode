@@ -1,0 +1,8 @@
+# Minimal program: route "/" prints Hello, Cash!
+.route "/"
+.func main
+CONST str "<!doctype html><html><body><h1>Hello, Cash!</h1></body></html>"
+PRINT_RAW
+HALT
+
+
