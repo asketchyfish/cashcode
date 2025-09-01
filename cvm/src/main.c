@@ -12,56 +12,42 @@ static int write_stdout(const void* data, size_t len, void* user){
 	return fwrite(data, 1, len, stdout) == len ? 0 : -1;
 }
 
-static const char* resolve_pages_dir(void){
-	struct stat st;
-	if(stat("pages", &st) == 0 && S_ISDIR(st.st_mode)) return "pages";
-	if(stat("../pages", &st) == 0 && S_ISDIR(st.st_mode)) return "../pages";
-	return "pages";
-}
+static int is_dir(const char* path){ struct stat st; return (stat(path, &st) == 0) && S_ISDIR(st.st_mode); }
 
 int main(int argc, char** argv){
 	if(argc < 2){
-		fprintf(stderr, "usage:\n  cash run <file.ccbc> [entry_offset]\n  cash serve <file.ccbc|pages> [port]\n  cash dev (alias of serve pages)\n");
+		fprintf(stderr, "cash %s\nusage:\n  cash run <file.ccbc> [entry_offset]\n  cash serve <dir|file.ccbc> [port]\n  cash dev [dir] [port]\n", CASH_VERSION);
 		return 2;
 	}
 
+	if(strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0){
+		printf("%s\n", CASH_VERSION);
+		return 0;
+	}
+
 	if(strcmp(argv[1], "dev") == 0){
-		// alias: serve pages (auto-resolve pages dir)
-		const char* pages_dir = resolve_pages_dir();
-		uint8_t* blob=NULL; size_t blen=0; int port=3000;
-		if(cc_build_bundle_from_pages(pages_dir, &blob, &blen)!=0){ fprintf(stderr, "build failed\n"); return 1; }
+		const char* dir = (argc >= 3) ? argv[2] : ".";
+		int port = (argc >= 4) ? atoi(argv[3]) : 3000;
+		if(!is_dir(dir)){ fprintf(stderr, "dev: '%s' is not a directory\n", dir); return 2; }
+		uint8_t* blob=NULL; size_t blen=0;
+		if(cc_build_bundle_from_pages(dir, &blob, &blen)!=0){ fprintf(stderr, "build failed\n"); return 1; }
 		FILE* tmp=fopen("/tmp/cash.bundle.ccbc","wb"); if(!tmp){ free(blob); return 1; }
 		fwrite(blob,1,blen,tmp); fclose(tmp); free(blob);
 		return run_http("/tmp/cash.bundle.ccbc", port);
 	}
 
 	if(strcmp(argv[1], "serve") == 0){
-		if(argc == 3 && strcmp(argv[2], "pages") == 0){
-			// build bundle in-memory from pages/ and serve
-			const char* pages_dir = resolve_pages_dir();
-			uint8_t* blob=NULL; size_t blen=0; int port=3000;
-			if(cc_build_bundle_from_pages(pages_dir, &blob, &blen)!=0){ fprintf(stderr, "build failed\n"); return 1; }
-			// write to temp file to reuse existing host; simple for MVP
+		if(argc < 3){ fprintf(stderr, "usage: cash serve <dir|file.ccbc> [port]\n"); return 2; }
+		const char* target = argv[2];
+		int port = (argc >= 4) ? atoi(argv[3]) : 3000;
+		if(is_dir(target)){
+			uint8_t* blob=NULL; size_t blen=0;
+			if(cc_build_bundle_from_pages(target, &blob, &blen)!=0){ fprintf(stderr, "build failed\n"); return 1; }
 			FILE* tmp=fopen("/tmp/cash.bundle.ccbc","wb"); if(!tmp){ free(blob); return 1; }
 			fwrite(blob,1,blen,tmp); fclose(tmp); free(blob);
 			return run_http("/tmp/cash.bundle.ccbc", port);
-		} else {
-			if(argc < 3){
-				fprintf(stderr, "usage: cash serve <file.ccbc|pages> [port]\n");
-				return 2;
-			}
-			const char* target = argv[2];
-			int port = (argc >= 4) ? atoi(argv[3]) : 3000;
-			if(strcmp(target, "pages") == 0){
-				const char* pages_dir = resolve_pages_dir();
-				uint8_t* blob=NULL; size_t blen=0;
-				if(cc_build_bundle_from_pages(pages_dir, &blob, &blen)!=0){ fprintf(stderr, "build failed\n"); return 1; }
-				FILE* tmp=fopen("/tmp/cash.bundle.ccbc","wb"); if(!tmp){ free(blob); return 1; }
-				fwrite(blob,1,blen,tmp); fclose(tmp); free(blob);
-				return run_http("/tmp/cash.bundle.ccbc", port);
-			}
-			return run_http(target, port);
 		}
+		return run_http(target, port);
 	}
 
 	if(strcmp(argv[1], "run") == 0){
