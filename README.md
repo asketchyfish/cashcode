@@ -1,7 +1,7 @@
 # Cashcode VM MVP
 
 - Spec: `docs/CCBC_SPEC.md`
-- VM sources: `cvm/` (builds single binary `cashvm`)
+- VM sources: `cvm/` (builds single binary `cash`)
 
 Build VM:
 ```
@@ -16,13 +16,13 @@ Create pages:
 
 Serve directly from pages (builds in-memory bundle):
 ```
-./cvm/cashvm serve pages
+./cvm/cash serve pages
 # Visit http://localhost:3000
 ```
 
 Serve a prebuilt bundle:
 ```
-./cvm/cashvm serve build/cash.bundle.ccbc 3000
+./cvm/cash serve build/cash.bundle.ccbc 3000
 ```
 
 Notes:

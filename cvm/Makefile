@@ -11,7 +11,7 @@ cash: $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS)
 
 clean:
-	rm -f $(OBJ) cashvm
+	rm -f $(OBJ) cash
 
 .PHONY: all clean
 

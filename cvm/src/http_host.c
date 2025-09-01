@@ -37,7 +37,7 @@ int run_http(const char* bundle_path, int port){
     struct sockaddr_in addr={0}; addr.sin_family=AF_INET; addr.sin_addr.s_addr=htonl(INADDR_ANY); addr.sin_port=htons((uint16_t)port);
     if(bind(s,(struct sockaddr*)&addr,sizeof(addr))<0){ perror("bind"); return 1; }
     listen(s, 16);
-    printf("cashvm http listening on http://localhost:%d\n", port);
+    printf("cash http listening on http://localhost:%d\n", port);
     for(;;){
         int c = accept(s, NULL, NULL);
         if(c<0) continue;
