@@ -7,8 +7,6 @@ Build VM:
 ```
 cd cvm
 make
-# optional: set version
-# make VERSION=0.2.0
 # install system-wide (optional)
 # sudo make install
 ```

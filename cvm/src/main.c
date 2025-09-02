@@ -1,4 +1,5 @@
 #include "../include/ccbc.h"
+#include "../include/version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
