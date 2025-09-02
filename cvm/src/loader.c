@@ -51,24 +51,32 @@ int cc_load_module(const uint8_t* bytes, size_t size, cc_module_t* out){
             out->consts[i].tag = CC_T_NUM;
             double d; memcpy(&d, pc, 8); pc+=8;
             out->consts[i].v.num = d;
+        } else if(tag==5){
+            if(pc + 4 > bytes + size) return -12;
+            uint32_t count = rd_u32(pc); pc+=4;
+            if(pc + count*4 > bytes + size) return -13;
+            out->consts[i].tag = CC_T_ARRAY;
+            out->consts[i].v.arr.count = count;
+            out->consts[i].v.arr.indices = (const uint32_t*)pc;
+            pc += count * 4;
         } else {
-            return -11;
+            return -14;
         }
     }
     const uint8_t* pf = p_at(bytes, size, off_funcs, 4);
-    if(!pf) return -12;
+    if(!pf) return -15;
     out->func_count = rd_u32(pf); pf+=4;
     out->funcs = (cc_func_t*)malloc(sizeof(cc_func_t)*out->func_count);
-    if(!out->funcs) return -13;
+    if(!out->funcs) return -16;
     for(uint32_t i=0;i<out->func_count;i++){
         out->funcs[i].name_idx = rd_u32(pf); pf+=4;
         out->funcs[i].code_off = rd_u32(pf); pf+=4;
     }
     const uint8_t* pr = p_at(bytes, size, off_routes, 4);
-    if(!pr) return -14;
+    if(!pr) return -17;
     out->route_count = rd_u32(pr); pr+=4;
     out->routes = (cc_route_t*)malloc(sizeof(cc_route_t)*out->route_count);
-    if(!out->routes) return -15;
+    if(!out->routes) return -18;
     for(uint32_t i=0;i<out->route_count;i++){
         out->routes[i].path_idx = rd_u32(pr); pr+=4;
         out->routes[i].func_index = rd_u32(pr); pr+=4;
@@ -98,7 +106,13 @@ int cc_find_route(const cc_module_t* mod, const char* path, uint32_t* out_entry_
 
 static void w32(uint8_t* p, uint32_t v){ p[0]=v&255; p[1]=(v>>8)&255; p[2]=(v>>16)&255; p[3]=(v>>24)&255; }
 
-typedef struct { uint8_t tag; cc_span_t span; } CConst;
+typedef struct { 
+    uint8_t tag; 
+    union {
+        cc_span_t span;
+        struct { uint32_t count; uint32_t* indices; } arr;
+    } v;
+} CConst;
 typedef struct { uint32_t name_idx, code_off; } CFunc;
 typedef struct { uint32_t path_idx, func_index; } CRoute;
 
@@ -106,8 +120,16 @@ static uint32_t bc_add_const(CConst** consts, size_t* csz, size_t* ccap, const c
     size_t len = strlen(s);
     if(*csz == *ccap){ *ccap = *ccap ? (*ccap * 2) : 16; *consts = (CConst*)realloc(*consts, (*ccap) * sizeof(CConst)); }
     (*consts)[*csz].tag = 1;
-    (*consts)[*csz].span.data = (const uint8_t*)strdup(s);
-    (*consts)[*csz].span.len = (uint32_t)len;
+    (*consts)[*csz].v.span.data = (const uint8_t*)strdup(s);
+    (*consts)[*csz].v.span.len = (uint32_t)len;
+    return (uint32_t)((*csz)++);
+}
+
+static uint32_t bc_add_array_const(CConst** consts, size_t* csz, size_t* ccap, uint32_t* indices, uint32_t count){
+    if(*csz == *ccap){ *ccap = *ccap ? (*ccap * 2) : 16; *consts = (CConst*)realloc(*consts, (*ccap) * sizeof(CConst)); }
+    (*consts)[*csz].tag = 5; // CC_T_ARRAY
+    (*consts)[*csz].v.arr.count = count;
+    (*consts)[*csz].v.arr.indices = indices;
     return (uint32_t)((*csz)++);
 }
 
@@ -130,6 +152,11 @@ static char* str_trim(char* s){
     size_t n=strlen(s);
     while(n>0 && (s[n-1]=='\n'||s[n-1]=='\r'||s[n-1]==' '||s[n-1]=='\t')){ s[--n]=0; }
     return s;
+}
+
+static cc_span_t cc_const_text_from_loader(CConst* consts, uint32_t idx){
+    if(idx >= 256) return (cc_span_t){0}; // safety check
+    return consts[idx].v.span;
 }
 
 static const char* var_get(Var* vars, size_t vcount, const char* name){
@@ -191,6 +218,7 @@ static char* replace_slot(const char* layout, const char* body){
 
 static const char* process_block(const char* cur, const char* pages_dir,
                                  CConst** consts, size_t* csz, size_t* ccap,
+                                 CFunc** funcs, size_t* fsz, size_t* fcap,
                                  uint8_t** code, size_t* codelen, size_t* codecap,
                                  Var* vars, size_t* vcount, size_t vcap){
     // Process lines until $end or end of string. Returns pointer to the position after ending line.
@@ -202,11 +230,106 @@ static const char* process_block(const char* cur, const char* pages_dir,
         if(line[0]=='$'){
             if(strncmp(line, "$end", 4)==0){ free(raw); return nl? nl+1 : cur+linelen; }
             if(strncmp(line, "$else", 5)==0){ free(raw); return cur; }
+            if(strncmp(line, "$function ", 10)==0){
+                // $function name() { ... }
+                char* p = line+10; while(*p==' '||*p=='\t') p++;
+                char name[128]={0}; size_t i=0; while(*p && *p!='('){ if(i<sizeof(name)-1) name[i++]=*p; p++; }
+                name[i]=0;
+                // skip to opening brace
+                while(*p && *p!='{') p++;
+                if(*p!='{'){ free(raw); cur = nl? nl+1 : cur+linelen; continue; }
+                p++; // skip {
+                
+                // find matching closing brace
+                const char* after_func = nl? nl+1 : cur+linelen;
+                const char* func_start = after_func;
+                int brace_depth = 1;
+                const char* scan = after_func;
+                const char* func_end = NULL;
+                while(*scan){
+                    if(*scan == '{') brace_depth++;
+                    else if(*scan == '}'){ brace_depth--; if(brace_depth == 0){ func_end = scan; break; } }
+                    scan++;
+                }
+                if(!func_end){ free(raw); return after_func; }
+                
+                // compile function body
+                uint32_t func_code_start = (uint32_t)*codelen;
+                Var func_vars[32]; size_t func_vcount = 0;
+                const char* func_pos = func_start;
+                while(func_pos < func_end){
+                    func_pos = process_block(func_pos, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, func_vars, &func_vcount, 32);
+                    if(!func_pos) break;
+                }
+                bc_code_emit(code, codelen, codecap, 0x41); // OP_RETURN
+                
+                // add function to function table
+                uint32_t name_idx = bc_add_const(consts, csz, ccap, name);
+                if(*fsz == *fcap){ *fcap = *fcap ? *fcap*2 : 8; *funcs = (CFunc*)realloc(*funcs, *fcap*sizeof(CFunc)); }
+                (*funcs)[*fsz].name_idx = name_idx;
+                (*funcs)[*fsz].code_off = func_code_start;
+                (*fsz)++;
+                
+                cur = func_end + 1;
+                free(raw);
+                continue;
+            }
+            if(strncmp(line, "$call ", 6)==0){
+                // $call functionName()
+                char* p = line+6; while(*p==' '||*p=='\t') p++;
+                char name[128]={0}; size_t i=0; while(*p && *p!='('){ if(i<sizeof(name)-1) name[i++]=*p; p++; }
+                name[i]=0;
+                
+                // find function index
+                uint32_t func_idx = 0;
+                int found = 0;
+                for(size_t j = 0; j < *fsz; j++){
+                    cc_span_t func_name = cc_const_text_from_loader(*consts, (*funcs)[j].name_idx);
+                    if(func_name.len == strlen(name) && memcmp(func_name.data, name, func_name.len) == 0){
+                        func_idx = (uint32_t)j;
+                        found = 1;
+                        break;
+                    }
+                }
+                if(found){
+                    bc_code_emit(code, codelen, codecap, 0x40); // OP_CALL
+                    bc_code_u32(code, codelen, codecap, func_idx);
+                }
+                
+                free(raw); cur = nl? nl+1 : cur+linelen; continue;
+            }
             if(strncmp(line, "$let ", 5)==0){
                 char* p = line+5; while(*p==' '||*p=='\t') p++;
                 char name[128]={0}; size_t i=0; while(*p && *p!=' ' && *p!='\t' && *p!='='){ if(i<sizeof(name)-1) name[i++]=*p; p++; }
                 name[i]=0; while(*p && *p!='=' ) p++; if(*p=='=') p++; while(*p==' '||*p=='\t') p++;
-                if(*p=='"' || *p=='\''){ char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* val=start; if(*vcount<vcap){ vars[*vcount].name=str_dup(name); vars[*vcount].value=str_dup(val); (*vcount)++; } *p=tmp; }
+                
+                if(*p=='['){
+                    // Array literal: $let items = ["a", "b", "c"]
+                    p++; // skip [
+                    uint32_t indices[32]; uint32_t count = 0;
+                    while(*p && *p!=']' && count < 32){
+                        while(*p==' '||*p=='\t') p++;
+                        if(*p=='"' || *p=='\''){
+                            char q=*p++; char* start=p; while(*p && *p!=q) p++;
+                            char tmp=*p; *p=0;
+                            uint32_t elem_idx = bc_add_const(consts, csz, ccap, start);
+                            indices[count++] = elem_idx;
+                            *p=tmp; p++;
+                        }
+                        while(*p==' '||*p=='\t') p++;
+                        if(*p==',') p++;
+                    }
+                    if(*p==']'){
+                        uint32_t* arr_indices = (uint32_t*)malloc(count * sizeof(uint32_t));
+                        memcpy(arr_indices, indices, count * sizeof(uint32_t));
+                        uint32_t array_idx = bc_add_array_const(consts, csz, ccap, arr_indices, count);
+                        // Store array index as variable value
+                        char val_str[16]; snprintf(val_str, sizeof(val_str), "%u", array_idx);
+                        if(*vcount<vcap){ vars[*vcount].name=str_dup(name); vars[*vcount].value=str_dup(val_str); (*vcount)++; }
+                    }
+                } else if(*p=='"' || *p=='\''){
+                    char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* val=start; if(*vcount<vcap){ vars[*vcount].name=str_dup(name); vars[*vcount].value=str_dup(val); (*vcount)++; } *p=tmp;
+                }
                 free(raw); cur = nl? nl+1 : cur+linelen; continue;
             }
             if(strncmp(line, "$if ", 4)==0){
@@ -235,23 +358,38 @@ static const char* process_block(const char* cur, const char* pages_dir,
                 if(truthy){
                     const char* true_end = else_pos ? else_pos : end_pos;
                     const char* p = inner;
-                    while(p < true_end){ p = process_block(p, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p < true_end){ p = process_block(p, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, vars, vcount, vcap); }
                 } else if(else_pos){
                     const char* false_start = strchr(else_pos,'\n'); false_start = false_start ? false_start+1 : end_pos;
                     const char* p = false_start;
-                    while(p < end_pos){ p = process_block(p, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p < end_pos){ p = process_block(p, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, vars, vcount, vcap); }
                 }
                 // move cur to after $end line
                 const char* end_nl = strchr(end_pos,'\n'); cur = end_nl ? end_nl+1 : end_pos; free(raw); continue;
             }
             if(strncmp(line, "$for ", 5)==0){
-                // $for $item in a,b,c
+                // $for $item in a,b,c OR $for $item in arrayVariable
                 char* p = line+5; while(*p==' '||*p=='\t') p++;
                 if(*p=='$') p++;
                 char vname[128]={0}; size_t vi=0; while(*p && *p!=' '&&*p!='\t') { if(vi<sizeof(vname)-1) vname[vi++]=*p; p++; }
                 vname[vi]=0; while(*p==' '||*p=='\t') p++; if(strncmp(p,"in",2)==0) p+=2; while(*p==' '||*p=='\t') p++;
-                // collect list until end of line
-                char* list = str_dup(p);
+                
+                // check if it's an array variable (starts with $)
+                char* list = NULL;
+                if(*p == '$'){
+                    // Array variable: $for $item in $arrayVar
+                    char array_name[128]={0}; size_t ai=0; p++; // skip $
+                    while(*p && *p!=' '&&*p!='\t'&&*p!='\n'){ if(ai<sizeof(array_name)-1) array_name[ai++]=*p; p++; }
+                    array_name[ai]=0;
+                    const char* array_val = var_get(vars, *vcount, array_name);
+                    if(array_val){
+                        // For now, just use the array index as a simple list
+                        list = str_dup(array_val);
+                    }
+                } else {
+                    // CSV list: $for $item in a,b,c
+                    list = str_dup(p);
+                }
                 // find block bounds
                 const char* after_for = nl? nl+1 : cur+linelen;
                 const char* inner = after_for; int depth=1; const char* end_pos=NULL; const char* scan=after_for;
@@ -264,7 +402,7 @@ static const char* process_block(const char* cur, const char* pages_dir,
                     if(*vcount < vcap){ vars[*vcount].name = str_dup(vname); vars[*vcount].value = str_dup(tv); (*vcount)++; }
                     // process inner
                     const char* p2 = inner;
-                    while(p2 < end_pos){ p2 = process_block(p2, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); }
+                    while(p2 < end_pos){ p2 = process_block(p2, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, vars, vcount, vcap); }
                     // pop var
                     if(*vcount>0){ free(vars[*vcount-1].name); free(vars[*vcount-1].value); (*vcount)--; }
                     tok = strtok_r(NULL, ",", &saveptr);
@@ -274,7 +412,7 @@ static const char* process_block(const char* cur, const char* pages_dir,
             }
             if(strncmp(line, "$include ", 9)==0){
                 char* p = line+9; while(*p==' '||*p=='\t') p++;
-                if(*p=='"' || *p=='\''){ char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* rel=start; char* inc = read_joined_file(pages_dir, rel); *p=tmp; if(inc){ Var vtmp[32]; size_t vcnt=*vcount; const char* pos = inc; while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, &vcnt, 32); if(!*pos) break; } free(inc);} }
+                if(*p=='"' || *p=='\''){ char q=*p++; char* start=p; while(*p && *p!=q) p++; char tmp=*p; *p=0; const char* rel=start; char* inc = read_joined_file(pages_dir, rel); *p=tmp; if(inc){ Var vtmp[32]; size_t vcnt=*vcount; const char* pos = inc; while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, vars, &vcnt, 32); if(!*pos) break; } free(inc);} }
                 free(raw); cur = nl? nl+1 : cur+linelen; continue;
             }
             if(strncmp(line, "$layout ", 8)==0){
@@ -291,7 +429,7 @@ static const char* process_block(const char* cur, const char* pages_dir,
                         char* combined = replace_slot(lay, body);
                         if(combined){
                             const char* pos = combined;
-                            while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, code, codelen, codecap, vars, vcount, vcap); if(!*pos) break; }
+                            while(*pos){ pos = process_block(pos, pages_dir, consts, csz, ccap, funcs, fsz, fcap, code, codelen, codecap, vars, vcount, vcap); if(!*pos) break; }
                             free(combined);
                         }
                     }
@@ -357,7 +495,7 @@ int cc_build_bundle_from_pages(const char* pages_dir, uint8_t** out_buf, size_t*
 
         // process body with $let/$if/$for, $include, and {$var} substitution
         Var vars[32]; size_t vcount=0;
-        (void)process_block(rest, pages_dir, &consts, &csz, &ccap, &code, &codelen, &codecap, vars, &vcount, 32);
+        (void)process_block(rest, pages_dir, &consts, &csz, &ccap, &funcs, &fsz, &fcap, &code, &codelen, &codecap, vars, &vcount, 32);
         bc_code_emit(&code, &codelen, &codecap, 0x00); // HALT
         free(buf);
     }
@@ -365,9 +503,27 @@ int cc_build_bundle_from_pages(const char* pages_dir, uint8_t** out_buf, size_t*
 
     // build blobs
     // consts
-    size_t const_bytes = 4; for(size_t i=0;i<csz;i++){ const_bytes += 1 + 4 + consts[i].span.len; }
+    size_t const_bytes = 4; 
+    for(size_t i=0;i<csz;i++){
+        if(consts[i].tag == 5){ // ARRAY
+            const_bytes += 1 + 4 + consts[i].v.arr.count * 4;
+        } else {
+            const_bytes += 1 + 4 + consts[i].v.span.len;
+        }
+    }
     uint8_t* const_blob = (uint8_t*)malloc(const_bytes); uint8_t* pc=const_blob; w32(pc, (uint32_t)csz); pc+=4;
-    for(size_t i=0;i<csz;i++){ *pc++=consts[i].tag; w32(pc, consts[i].span.len); pc+=4; memcpy(pc, consts[i].span.data, consts[i].span.len); pc+=consts[i].span.len; }
+    for(size_t i=0;i<csz;i++){
+        *pc++ = consts[i].tag;
+        if(consts[i].tag == 5){ // ARRAY
+            w32(pc, consts[i].v.arr.count); pc+=4;
+            for(uint32_t j=0; j<consts[i].v.arr.count; j++){
+                w32(pc, consts[i].v.arr.indices[j]); pc+=4;
+            }
+        } else {
+            w32(pc, consts[i].v.span.len); pc+=4;
+            memcpy(pc, consts[i].v.span.data, consts[i].v.span.len); pc+=consts[i].v.span.len;
+        }
+    }
 
     // funcs
     size_t func_bytes = 4 + fsz*8; uint8_t* func_blob=(uint8_t*)malloc(func_bytes); uint8_t* pf=func_blob; w32(pf,(uint32_t)fsz); pf+=4;
@@ -394,7 +550,13 @@ int cc_build_bundle_from_pages(const char* pages_dir, uint8_t** out_buf, size_t*
 
     *out_buf = blob; *out_len = total;
     free(const_blob); free(func_blob); free(route_blob); free(code);
-    for(size_t i=0;i<csz;i++){ free((void*)consts[i].span.data); }
+    for(size_t i=0;i<csz;i++){
+        if(consts[i].tag == 5){ // ARRAY
+            free((void*)consts[i].v.arr.indices);
+        } else {
+            free((void*)consts[i].v.span.data);
+        }
+    }
     free(consts); free(funcs); free(routes);
     return 0;
 }

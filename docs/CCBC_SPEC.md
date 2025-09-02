@@ -32,10 +32,12 @@ Goal: A compact, portable, streaming-friendly bytecode for server-side HTML rend
     - 0x02 = HtmlSafe (UTF-8, trusted)
     - 0x03 = Number (f64)
     - 0x04 = Bytes (raw)
+    - 0x05 = Array (list of constant indices)
   - payload: variant by tag
     - Text/HtmlSafe: len u32, bytes[len]
     - Number: f64 (8 bytes)
     - Bytes: len u32, bytes[len]
+    - Array: count u32, indices[count] u32
 
 ### Function Table
 - count: u32
@@ -61,8 +63,12 @@ Goal: A compact, portable, streaming-friendly bytecode for server-side HTML rend
 - 0x13 OP_TAG_END                  ; print '>' (after open/attrs)
 - 0x20 OP_JUMP i32 rel             ; ip += rel
 - 0x21 OP_JF i32 rel               ; pop cond (truthy), if false ip += rel
-- 0x30 OP_ITER_START               ; pop iterable -> iterator frame
-- 0x31 OP_ITER_NEXT i32 relEnd     ; if next exists, push item else jump relEnd
+- 0x30 OP_ARRAY_GET u32 idx        ; pop array, push array[idx]
+- 0x31 OP_ARRAY_LEN                ; pop array, push length
+- 0x32 OP_ITER_START               ; pop iterable -> iterator frame
+- 0x33 OP_ITER_NEXT i32 relEnd     ; if next exists, push item else jump relEnd
+- 0x40 OP_CALL u32 funcIdx         ; call function[funcIdx], push return value
+- 0x41 OP_RETURN                   ; return from function, pop return value
 - 0xF0 OP_DEBUG u32 n              ; implementation-defined
 
 Notes:

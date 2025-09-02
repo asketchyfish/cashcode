@@ -1,0 +1,29 @@
+$route "/functions"
+
+$function greet() {
+    <h2>Hello from function!</h2>
+}
+
+$function showMessage() {
+    <p>This is a message from a function.</p>
+}
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Functions Test</title>
+</head>
+<body>
+    <h1>Testing Functions</h1>
+    
+    <p>Before calling functions...</p>
+    
+    $call greet()
+    
+    <p>Between function calls...</p>
+    
+    $call showMessage()
+    
+    <p>After calling functions.</p>
+</body>
+</html>

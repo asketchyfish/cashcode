@@ -1,0 +1,35 @@
+$route "/arrays"
+
+$let items = ["apple", "banana", "cherry"]
+$let colors = ["red", "green", "blue"]
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Arrays Test</title>
+</head>
+<body>
+    <h1>Testing Arrays</h1>
+    
+    <h2>Fruits:</h2>
+    <ul>
+    $for $item in $items
+    <li>{$item}</li>
+    $end
+    </ul>
+    
+    <h2>Colors:</h2>
+    <ul>
+    $for $color in $colors
+    <li>{$color}</li>
+    $end
+    </ul>
+    
+    <h2>Mixed List (CSV):</h2>
+    <ul>
+    $for $thing in one,two,three
+    <li>{$thing}</li>
+    $end
+    </ul>
+</body>
+</html>

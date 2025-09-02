@@ -10,7 +10,8 @@ typedef enum {
     CC_T_TEXT = 1,
     CC_T_HTML = 2,
     CC_T_NUM  = 3,
-    CC_T_BYTES= 4
+    CC_T_BYTES= 4,
+    CC_T_ARRAY= 5
 } cc_type_t;
 
 typedef struct {
@@ -19,10 +20,16 @@ typedef struct {
 } cc_span_t;
 
 typedef struct {
+    uint32_t count;
+    const uint32_t* indices;
+} cc_array_t;
+
+typedef struct {
     cc_type_t tag;
     union {
         cc_span_t span; // TEXT/HTML/BYTES
         double num;     // NUM
+        cc_array_t arr; // ARRAY
     } v;
 } cc_const_t;
 
@@ -55,6 +62,11 @@ typedef struct {
 } cc_module_t;
 
 typedef struct {
+    const uint8_t* ip;
+    int sp;
+} cc_call_frame_t;
+
+typedef struct {
     // simple stack VM
     const cc_module_t* mod;
     const uint8_t* ip;
@@ -65,6 +77,9 @@ typedef struct {
     double stack_nums[64];
     uint8_t stack_tags[256];
     int sp;
+    // call stack for functions
+    cc_call_frame_t call_stack[32];
+    int call_sp;
 } cc_vm_t;
 
 int cc_load_module(const uint8_t* bytes, size_t size, cc_module_t* out);
